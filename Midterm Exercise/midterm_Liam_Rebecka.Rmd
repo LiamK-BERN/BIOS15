@@ -9,4 +9,331 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+# Preprocessing
+## Packages
+```{r}
+library(tidyverse)
+# for plotting PCA
+library(ggfortify)
+# for the backward model selection function called regsubsets
+library(leaps)
+# for negative binomial regression
+library(MASS)
+library(MuMIn)
+# for reading in data
+library(readr)
+# for general plotting
+library(ggplot2)
+# for plotting correlation matrix
+library(corrplot)
+# for predicting
+library(ggeffects)
+```
 
+
+## Data
+Reading in the data and making it a tibble for the future
+```{r}
+eucalyp <- read.csv("Midterm Exercise/exam2023_data-2.csv")
+eucalyp <- tibble(eucalyp)
+head(eucalyp)
+
+eucalyp <- rename(eucalyp, Landscape_position = "Landscape.position")
+eucalyp <- rename(eucalyp, Distance_to_Eucalypt_canopy_m = "Distance_to_Eucalypt_canopy.m.")
+
+# removing NAs and checking rows before and after
+nrow(eucalyp)
+eucalyp <- na.omit(eucalyp)
+nrow(eucalyp)
+```
+
+### Response variable
+```{r}
+eucalyp["total_seedlings"] <- 
+  eucalyp$euc_sdlgs0_50cm + 
+  eucalyp$euc_sdlgs50cm.2m + 
+  eucalyp$euc_sdlgs.2m
+```
+
+```{r}
+# Check that the new column sums up to correct number of seedings
+sum(eucalyp$total_seedlings)
+
+# Sum of seedings from original columns
+sum(eucalyp$euc_sdlgs0_50cm) + 
+sum(eucalyp$euc_sdlgs50cm.2m) +
+sum(eucalyp$euc_sdlgs.2m)
+
+# Remove the old seeding columns
+eucalyp <- eucalyp |> dplyr::select(!c(euc_sdlgs0_50cm,
+                                euc_sdlgs50cm.2m,
+                                euc_sdlgs.2m))
+```
+
+## OneHot Encoder
+```{r}
+#Check class in all columns
+lapply(eucalyp, class)
+```
+```{r}
+# Remove character columns that definitely not needed
+eucalyp <- eucalyp |> dplyr::select(!c(Date,Property,SurveyID))
+
+# Check out the three character columns
+print("Unique Aspect values")
+length(unique(eucalyp$Aspect))
+unique(eucalyp$Aspect)
+print("Unique landscape values")
+length(unique(eucalyp$Landscape_position))
+unique(eucalyp$Landscape_position)
+print("Unique season values")
+length(unique(eucalyp$Season))
+unique(eucalyp$Season)
+
+# Change them into factors
+
+eucalyp$Aspect <- as.integer(factor(eucalyp$Aspect))
+eucalyp$Landscape_position <- as.integer(factor(eucalyp$Landscape_position))
+eucalyp$Season <- as.integer(factor(eucalyp$Season))
+
+# Print the new labels for Aspects and Landscape so we know wat is wat
+unique(eucalyp$Aspect)
+unique((eucalyp$Landscape_position))
+unique(eucalyp$Season)
+```
+
+Aspects\
+1 0\
+2 e\
+3 n\
+4 ne\
+5 nne\
+6 nw\
+7 s\
+8 se\
+9 sw\
+10 w\
+\
+Landscape positions\
+1 crest\
+2 flat\
+3 slope\
+4 toe_of_slope\
+\
+
+
+# Correlation list and matrix
+
+## Correlation matrix
+```{r}
+# creating correlation matrix
+correlation <- cor(eucalyp)
+```
+
+## Correlation matrix visualisation
+```{r}
+corrplot(correlation, method="circle")
+```
+
+## Correlation list
+```{r}
+corr_list <- correlation %>%
+  as.data.frame() %>%
+  mutate(var1 = rownames(.)) %>%
+  pivot_longer(-var1, names_to = "var2", values_to = "corr") %>%
+  filter(var1 < var2) %>%
+  arrange(desc(abs(corr)))
+
+corr_list
+```
+
+
+# PCA
+```{r}
+# Do the PCA
+pca_eucalyp <- prcomp(eucalyp, scale. = TRUE, center = TRUE, retx = TRUE)
+names(pca_eucalyp)
+summary(pca_eucalyp)
+
+```
+
+```{r}
+# Scree plot
+# npcs is nr of principal components to plot, deafult is 10
+screeplot(pca_eucalyp, type = "lines", npcs = 33)
+
+var_explained <- pca_eucalyp$sdev^2
+prop_var <- var_explained / sum(var_explained)
+
+plot(prop_var,
+     type = "b",
+     xlab = "Principal Component",
+     ylab = "Proportion of Variance Explained",
+     main = "Scree Plot")
+
+```
+
+```{r}
+sort(abs(pca_eucalyp$rotation[,1]), decreasing = TRUE)
+```
+
+# Model Selection
+## Choice of family distribution
+```{r}
+# check if poisson or negative binomial
+mean(eucalyp$total_seedlings)
+var(eucalyp$total_seedlings)
+```
+
+## Initial sorting
+Remove columns, based on what is important in PC1, and based on which variables are highly correlated plus some biological weigh-ins.
+```{r}
+eucalyp <- eucalyp |> dplyr::select(!c(
+  PET,
+  precipitation_coldest_quarter,
+  precipitation_warmest_quarter,
+  Northing,
+  Easting,
+  MrVBF,
+  Euc_canopy_cover
+))
+
+```
+
+## Backward selection
+```{r}
+backward_m <- regsubsets(
+  total_seedlings~.,
+  data=eucalyp,
+  nvmax= 25,
+  method = "backward"
+  )
+
+# Summary the model output
+model_summary <- summary(backward_m)
+
+# Look at the RSS of the model 
+model_summary$rss
+
+# Plot number of predictors against the RSS to see where the model has the best fit without being unnecessary large
+plot(model_summary$rss, type = "b", xlab = "Number of predictors", ylab = "RSS")
+
+```
+
+```{r}
+# Extract the coefficients of the "best" model
+# Named numeric vector
+coef_10 <- coef(backward_m, 10)
+coef_10
+
+```
+
+```{r}
+# Define the "best" formula, based on the 10 predictors
+# Get variable names (excluding intercept)
+best_vars <- names(coef_10)[-1]
+best_vars
+
+# Construct a formula automatically
+formula_best <- as.formula(
+  paste("total_seedlings~", paste(best_vars, collapse = " + "))
+)
+
+formula_best
+```
+
+## Forward Selection with AIC
+```{r}
+predictors <- c(
+  "annual_precipitation",
+  "Litter_cover",
+  "Landscape_position",
+  "U_ppm",
+  "ExoticPerennialGrass_cover",
+  "NativePerennialFern_cover",
+  "NativePerennialGrass_cover",
+  "Distance_to_Eucalypt_canopy_m",
+  "Th_ppm",
+  "ExoticAnnualGrass_cover"
+)
+
+results <- vector("list", length(predictors))
+AICTab  <- data.frame(
+  model = seq_along(predictors),
+  AIC = NA_real_,
+  logLik = NA_real_
+)
+
+for (i in seq_along(predictors)) {
+  pred <- paste(predictors[1:i], collapse = " + ")
+  formula <- as.formula(paste("total_seedlings ~", pred))
+  fit <- glm.nb(formula, data = eucalyp)
+  
+  results[[i]] <- fit
+  AICTab$AIC[i]   <- AIC(fit)
+  AICTab$logLik[i] <- as.numeric(logLik(fit))
+}
+
+AICTab = AICTab[order(AICTab$AIC, decreasing=F),]
+AICTab$delta = round(AICTab$AIC - min(AICTab$AIC), 2)
+lh = exp(-0.5*AICTab$delta)
+AICTab$w = round(lh/sum(lh), 2)
+AICTab
+```
+
+### Plotting the results
+```{r}
+for (i in 1:length(predictors)) {
+# Make the prediction with altitude as predictor and effort and MAT held constant
+pred <-  ggpredict(results[[2]], terms = predictors[i])
+
+
+
+# Plot the results
+# Plot prediction
+p <- ggplot(pred, aes(x = x, y = predicted)) +
+  geom_line(size = 1, col = "darkred") + # make the plot a line
+  # Add confidence interval
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), 
+              alpha = 0.2, fill = "darkred") +
+  # add raw data points 
+  geom_point(data = eucalyp, aes(x = .data[[predictors[i]]], y = total_seedlings),
+             inherit.aes = FALSE,
+             col = "darkred") +
+  labs(x = predictors[i],
+       y = "Predicted total seedings") +
+  theme(axis.title =element_text(size=20))
+
+print(p)
+
+}
+
+```
+
+# Correlation list and matrix after model selection
+```{r}
+eucalyp_red <- eucalyp |> dplyr::select(all_of(predictors))
+```
+
+## Correlation matrix
+```{r}
+# creating correlation matrix
+correlation_red <- cor(eucalyp_red)
+```
+
+## Correlation matrix visualisation
+```{r}
+corrplot(correlation_red, method="circle")
+```
+
+## Correlation list
+```{r}
+corr_list <- correlation_red %>%
+  as.data.frame() %>%
+  mutate(var1 = rownames(.)) %>%
+  pivot_longer(-var1, names_to = "var2", values_to = "corr") %>%
+  filter(var1 < var2) %>%
+  arrange(desc(abs(corr)))
+
+corr_list
+```
