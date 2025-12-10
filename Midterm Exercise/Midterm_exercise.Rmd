@@ -1,0 +1,150 @@
+---
+title: "Midterm Exercise"
+author: "Liam Kniberg & Rebecka Antonsson"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Preprocessing
+```{r}
+library(readr)
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+library(MASS)
+library(MuMIn)
+```
+
+## Data
+```{r}
+df <- read_csv("Midterm Exercise/exam2023_data-2.csv")
+head(df)
+```
+## Processing
+Combining the seedling sizes into one column to only register the if there is plants in quadrants.
+```{r}
+df["seedlings"] <- df$euc_sdlgs0_50cm + df$`euc_sdlgs50cm-2m` + df$`euc_sdlgs>2m`
+
+df <- na.omit(df)
+df <- as_tibble(df)
+
+df1 <- df
+
+y <- df$seedlings
+
+df <- df %>% select(!c(euc_sdlgs0_50cm,
+                `euc_sdlgs50cm-2m`, 
+                `euc_sdlgs>2m`, Property, Date, SurveyID))
+
+df1 <- df1 %>% select(!c(euc_sdlgs0_50cm,
+                `euc_sdlgs50cm-2m`, 
+                `euc_sdlgs>2m`, seedlings, Property, Date, SurveyID, precipitation_coldest_quarter, precipitation_warmest_quarter, PET, Northing, Easting, MrVBF, Euc_canopy_cover))
+head(df1)
+```
+
+## One hot Encoder
+```{r}
+# Changes the aspect column into integer
+df$Aspect <- as.integer(factor(df$Aspect))
+
+# changes the landscape position into integer
+df$`Landscape position` <- as.integer(factor(df$`Landscape position`))
+
+df$Season <- as.integer(factor(df$Season))
+
+# Changes the aspect column into integer
+df1$Aspect <- as.integer(factor(df1$Aspect))
+
+# changes the landscape position into integer
+df1$`Landscape position` <- as.integer(factor(df1$`Landscape position`))
+
+df1$Season <- as.integer(factor(df1$Season))
+```
+
+## Correlation matrix
+```{r}
+correlation <- cor(df)
+
+library(data.table)
+
+corr_table <- setDT(melt(matrix(correlation)))[order(value)]
+
+corr_list <- correlation %>%
+  as.data.frame() %>%
+  mutate(var1 = rownames(.)) %>%
+  pivot_longer(-var1, names_to = "var2", values_to = "corr") %>%
+  filter(var1 < var2) %>%
+  arrange(desc(abs(corr)))
+
+corr_list
+```
+```{r}
+correlation1 <- cor(df1)
+
+corr_list1 <- correlation1 %>%
+  as.data.frame() %>%
+  mutate(var1 = rownames(.)) %>%
+  pivot_longer(-var1, names_to = "var2", values_to = "corr") %>%
+  filter(var1 < var2) %>%
+  arrange(desc(abs(corr)))
+
+corr_list1
+```
+
+
+## Visualize corrplot
+```{r}
+library(corrplot)
+corrplot(correlation1, method="circle")
+```
+
+# Backwards selection
+```{r}
+df <- rename(df, Landscape_position = "Landscape position")
+df <- rename(df, Distance_to_Eucalypt_canopy_m = "Distance_to_Eucalypt_canopy(m)")
+
+preds <- c(
+  "annual_precipitation",
+  "Litter_cover",
+  "Landscape_position",
+  "U_ppm",
+  "ExoticPerennialGrass_cover",
+  "NativePerennialFern_cover",
+  "NativePerennialGrass_cover",
+  "Distance_to_Eucalypt_canopy_m",
+  "Th_ppm",
+  "ExoticAnnualGrass_cover"
+)
+
+results <- vector("list", length(preds))
+AICTab  <- data.frame(
+  model = seq_along(preds),
+  n_pred = seq_along(preds),
+  AIC = NA_real_,
+  logLik = NA_real_
+)
+
+for (i in seq_along(preds)) {
+  pred <- paste(preds[1:i], collapse = " + ")
+  formula <- as.formula(paste("seedlings ~", pred))
+  fit <- glm.nb(formula, data = df)
+  
+  results[[i]] <- fit
+  AICTab$AIC[i]   <- AIC(fit)
+  AICTab$logLik[i] <- as.numeric(logLik(fit))
+}
+
+AICTab = AICTab[order(AICTab$AIC, decreasing=F),]
+AICTab$delta = round(AICTab$AIC - min(AICTab$AIC), 2)
+lh = exp(-0.5*AICTab$delta)
+AICTab$w = round(lh/sum(lh), 2)
+AICTab
+
+```
+
+
+
